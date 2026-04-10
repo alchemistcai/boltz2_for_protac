@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -217,25 +218,31 @@ def compute_3d_conformer(mol: Mol, version: str = "v3") -> bool:
     """
     if version == "v3":
         options = AllChem.ETKDGv3()
-    elif version == "v2":
-        options = AllChem.ETKDGv2()
     else:
         options = AllChem.ETKDGv2()
-
     options.clearConfs = False
     conf_id = -1
 
     try:
         conf_id = AllChem.EmbedMolecule(mol, options)
-
-        if conf_id == -1:
-            print(
-                f"WARNING: RDKit ETKDGv3 failed to generate a conformer for molecule "
+        if conf_id == -1 and version=='v3':
+            logging.info(
+            f"RDKit ETKDGv3 failed to generate a conformer for molecule "
+            f"{Chem.MolToSmiles(AllChem.RemoveHs(mol))}, so the program will use ETKDGv2. "
+            )
+            options=AllChem.ETKDGv2()
+            options.clearConfs = False
+            conf_id = AllChem.EmbedMolecule(mol, options)
+            if conf_id != -1:
+                logging.warning(
+                f"RDKit ETKDGv3 and ETKDGv2 failed to generate a conformer for molecule "
                 f"{Chem.MolToSmiles(AllChem.RemoveHs(mol))}, so the program will start with random coordinates. "
                 f"Note that the performance of the model under this behaviour was not tested."
-            )
-            options.useRandomCoords = True
-            conf_id = AllChem.EmbedMolecule(mol, options)
+                )
+                options=AllChem.ETKDGv2()
+                options.clearConfs = False
+                options.useRandomCoords = True
+                conf_id = AllChem.EmbedMolecule(mol, options)
 
         AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=1000)
 
@@ -249,10 +256,7 @@ def compute_3d_conformer(mol: Mol, version: str = "v3") -> bool:
         conformer.SetProp("name", "Computed")
         conformer.SetProp("coord_generation", f"ETKDG{version}")
 
-        return True
-
-    return False
-
+    return True
 
 def get_conformer(mol: Mol) -> Conformer:
     """Retrieve an rdkit object for a deemed conformer.
@@ -1205,9 +1209,9 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                     if ref_mol.GetNumAtoms() > 128:
                         msg = f"The ligand for affinity is too large, ligands with more than 128 atoms are not " \
                               f"supported in the affinity prediction module"
-                        raise ValueError(msg)
+                        logging.error(msg) # just report for protac
                     elif ref_mol.GetNumAtoms() > 56:
-                        print("WARNING: the ligand used for affinity calculation is larger than 56 heavy-atoms, which "
+                        logging.warning("the ligand used for affinity calculation is larger than 56 heavy-atoms, which "
                               "was the maximum during training, therefore the affinity output might be inaccurate.")
 
                 # Parse residue
@@ -1266,9 +1270,9 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                 # Add error and warning messaging when computing affinity with ligands too large
                 if mol_no_h.GetNumAtoms() > 128:
                     msg = f"The ligand for affinity is too large, ligands with more than 128 atoms are not supported in the affinity prediction module"
-                    raise ValueError(msg)
+                    logging.warning(msg)
                 elif mol_no_h.GetNumAtoms() > 56:
-                    print("WARNING: the ligand used for affinity calculation is larger than 56 heavy-atoms, "
+                    logging.info("WARNING: the ligand used for affinity calculation is larger than 56 heavy-atoms, "
                           "which was the maximum during training, therefore the affinity output might be inaccurate.")
 
             affinity_mw = AllChem.Descriptors.MolWt(mol_no_h) if affinity else None
