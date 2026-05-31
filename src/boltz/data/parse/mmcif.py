@@ -837,6 +837,21 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
 
     # Load structure object
     structure = gemmi.make_structure_from_block(block)
+    # structure.setup_entities()
+    # structure.clear_sequences()  
+  
+    # for chain in structure[0]:  
+    #     seq = []  
+    #     for residue in chain:  
+    #         if residue.entity_type == gemmi.EntityType.Polymer:  
+    #             seq.append(residue.name)  
+        
+    #     if seq:  
+    #         for entity in structure.entities:  
+    #             if chain.name in entity.subchains or chain.subchains()[0].subchain_id() in entity.subchains:  
+    #                 entity.full_sequence = seq  
+    #                 break  
+  
 
     # Clean up the structure
     structure.merge_chain_parts()
