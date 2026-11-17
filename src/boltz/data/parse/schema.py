@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 from typing import Optional
-
+from openbabel import pybel
 import click
 import numpy as np
 from Bio import Align
@@ -197,6 +197,57 @@ def convert_atom_name(name: str) -> tuple[int, int, int, int]:
     name = name + [0] * (4 - len(name))
     return tuple(name)
 
+def compute_3d_conformer_by_openbabel(mol: Mol) -> int:
+    """Generate 3D coordinates using OpenBabel when RDKit's ETKDG fails.
+
+    Parameters
+    ----------
+    mol : Mol
+        The RDKit molecule to process.
+
+    Returns
+    -------
+    int
+        The conformer id of the newly assigned conformer, or -1 on failure.
+    """
+    logging.warning("RDKit ETKDG failed to generate a conformer, using OpenBabel instead.")
+
+    try:
+        # 1. Convert to SMILES and generate 3D coordinates with OpenBabel
+        smiles = Chem.MolToSmiles(mol)
+        obmol = pybel.readstring("smi", smiles)
+        obmol.make3D(forcefield="uff")
+        sdf = obmol.write("sdf")
+
+        # 2. Parse the SDF back into an RDKit molecule
+        new_mol = Chem.MolFromMolBlock(sdf, removeHs=False, sanitize=False)
+        if new_mol is None:
+            logging.error("OpenBabel SDF could not be parsed by RDKit.")
+            return -1
+
+        # 3. Match only heavy atoms
+        mol_no_h = Chem.RemoveHs(mol)
+        new_mol_no_h = Chem.RemoveHs(new_mol)
+        mol_no_h_to_mol = mol.GetSubstructMatch(mol_no_h)
+        match_heavy = new_mol_no_h.GetSubstructMatch(mol_no_h)
+
+        if not mol_no_h_to_mol or not match_heavy:
+            logging.error("Could not map OpenBabel conformer to original molecule.")
+            return -1
+
+        conf = Chem.Conformer(mol.GetNumAtoms())
+        new_conf = new_mol_no_h.GetConformer()
+        for i, new_idx in enumerate(match_heavy):
+            orig_idx = mol_no_h_to_mol[i]
+            pos = new_conf.GetAtomPosition(new_idx)
+            conf.SetAtomPosition(orig_idx, pos)
+
+        return mol.AddConformer(conf, assignId=True)
+
+    except Exception as e:  # noqa: BLE001
+        logging.error(f"OpenBabel conformer generation failed: {e}")
+        return -1
+
 
 def compute_3d_conformer(mol: Mol, version: str = "v3") -> bool:
     """Generate 3D coordinates using EKTDG method.
@@ -233,16 +284,18 @@ def compute_3d_conformer(mol: Mol, version: str = "v3") -> bool:
             options=AllChem.ETKDGv2()
             options.clearConfs = False
             conf_id = AllChem.EmbedMolecule(mol, options)
-            if conf_id != -1:
-                logging.warning(
-                f"RDKit ETKDGv3 and ETKDGv2 failed to generate a conformer for molecule "
-                f"{Chem.MolToSmiles(AllChem.RemoveHs(mol))}, so the program will start with random coordinates. "
-                f"Note that the performance of the model under this behaviour was not tested."
-                )
-                options=AllChem.ETKDGv2()
-                options.clearConfs = False
-                options.useRandomCoords = True
-                conf_id = AllChem.EmbedMolecule(mol, options)
+            if conf_id == -1:
+                conf_id =compute_3d_conformer_by_openbabel(mol)
+                if conf_id == -1:
+                    logging.warning(
+                    f"RDKit ETKDGv3 and ETKDGv2 failed to generate a conformer for molecule "
+                    f"{Chem.MolToSmiles(AllChem.RemoveHs(mol))}, so the program will start with random coordinates. "
+                    f"Note that the performance of the model under this behaviour was not tested."
+                    )
+                    options=AllChem.ETKDGv2()
+                    options.clearConfs = False
+                    options.useRandomCoords = True
+                    conf_id = AllChem.EmbedMolecule(mol, options)
 
         AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=1000)
 
@@ -255,8 +308,9 @@ def compute_3d_conformer(mol: Mol, version: str = "v3") -> bool:
         conformer = mol.GetConformer(conf_id)
         conformer.SetProp("name", "Computed")
         conformer.SetProp("coord_generation", f"ETKDG{version}")
+        return True
 
-    return True
+    return False
 
 def get_conformer(mol: Mol) -> Conformer:
     """Retrieve an rdkit object for a deemed conformer.
